@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+dist/
+build/
+*.spec
+.claude/
+*.segments.json
+*.mp3
+*.wav
+*.m4a
+*.flac
+*.ogg

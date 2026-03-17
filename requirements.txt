@@ -1,0 +1,18 @@
+# Core UI
+PySide6>=6.6.0
+
+# Waveform display
+pyqtgraph>=0.13.3
+numpy>=1.24.0
+
+# Audio processing
+pydub>=0.25.1
+
+# Audio playback (cross-platform, wraps PortAudio)
+sounddevice>=0.4.6
+
+# AI speech recognition
+faster-whisper>=1.0.0
+
+# FFmpeg Python bindings (optional helper, ffmpeg binary required separately)
+ffmpeg-python>=0.2.0

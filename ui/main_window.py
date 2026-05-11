@@ -22,6 +22,7 @@ from core.audio_loader import AudioLoader
 from core.transcriber import Transcriber, Segment
 from core.exporter import Exporter
 from utils.ffmpeg_helper import find_ffmpeg, apply_ffmpeg_path, is_winerror2, FFMPEG_HELP
+from utils.time_format import format_seconds
 from ui.waveform_widget import WaveformWidget
 
 
@@ -917,17 +918,17 @@ class MainWindow(QMainWindow):
             self.table.setItem(i, 2, idx_item)
 
             # Col 3: start
-            start_item = QTableWidgetItem(f"{seg.start:.3f}")
+            start_item = QTableWidgetItem(format_seconds(seg.start))
             start_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(i, 3, start_item)
 
             # Col 4: end
-            end_item = QTableWidgetItem(f"{seg.end:.3f}")
+            end_item = QTableWidgetItem(format_seconds(seg.end))
             end_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(i, 4, end_item)
 
             # Col 5: duration
-            dur_item = QTableWidgetItem(f"{seg.end - seg.start:.2f}s")
+            dur_item = QTableWidgetItem(f"{format_seconds(seg.end - seg.start)}s")
             dur_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             dur_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(i, 5, dur_item)
@@ -982,7 +983,7 @@ class MainWindow(QMainWindow):
         self._updating_table = True
         dur_item = self.table.item(row, 5)
         if dur_item:
-            dur_item.setText(f"{seg.end - seg.start:.2f}s")
+            dur_item.setText(f"{format_seconds(seg.end - seg.start)}s")
         self._updating_table = False
 
     # -----------------------------------------------------------------------
@@ -997,9 +998,9 @@ class MainWindow(QMainWindow):
 
         self._updating_table = True
         for col, val in [
-            (3, f"{seg.start:.3f}"),
-            (4, f"{seg.end:.3f}"),
-            (5, f"{seg.end - seg.start:.2f}s"),
+            (3, format_seconds(seg.start)),
+            (4, format_seconds(seg.end)),
+            (5, f"{format_seconds(seg.end - seg.start)}s"),
         ]:
             item = self.table.item(self.selected_row, col)
             if item:

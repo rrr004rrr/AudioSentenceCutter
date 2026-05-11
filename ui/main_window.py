@@ -277,6 +277,7 @@ class MainWindow(QMainWindow):
         self.current_file: Optional[str] = None
         self.audio_cache: dict = {}       # path -> PydubAudio
         self.segments_cache: dict = {}    # path -> list[Segment]
+        self.audio_duration: dict = {}    # path -> total length (seconds)
         self.current_segments: list = []
         self.selected_row: int = -1
         self._updating_table: bool = False
@@ -780,6 +781,7 @@ class MainWindow(QMainWindow):
             self.file_paths.remove(path)
         self.audio_cache.pop(path, None)
         self.segments_cache.pop(path, None)
+        self.audio_duration.pop(path, None)
         self.file_status_map.pop(path, None)
         self.cross_file_selection.pop(path, None)
         if self.current_file == path:
@@ -814,6 +816,8 @@ class MainWindow(QMainWindow):
         segments = self.queue_worker.segment_results.pop(path, None)
         if audio is not None:
             self.audio_cache[path] = audio
+            # pydub AudioSegment exposes length in milliseconds via len()
+            self.audio_duration[path] = len(audio) / 1000.0
         if segments is not None:
             self.segments_cache[path] = segments
 
@@ -904,8 +908,10 @@ class MainWindow(QMainWindow):
 
         count = len(self.cross_file_selection.get(path, set()))
         sel_str = f"，已勾選 {count} 句" if count > 0 else ""
+        dur = self.audio_duration.get(path)
+        dur_str = f"，總長 {format_seconds(dur)} s" if dur is not None else ""
         self.statusBar().showMessage(
-            f"{os.path.basename(path)}  —  {len(self.current_segments)} 段{sel_str}"
+            f"{os.path.basename(path)}  —  {len(self.current_segments)} 段{dur_str}{sel_str}"
         )
 
     # -----------------------------------------------------------------------
@@ -996,11 +1002,13 @@ class MainWindow(QMainWindow):
         base = os.path.basename(path)
         count = len(self.cross_file_selection.get(path, set()))
         count_str = f"  [{count}]" if count > 0 else ""
+        dur = self.audio_duration.get(path)
+        dur_str = f"  ({format_seconds(dur)}s)" if dur is not None else ""
 
         for i in range(self.file_list_widget.count()):
             item = self.file_list_widget.item(i)
             if item.data(Qt.ItemDataRole.UserRole) == path:
-                item.setText(f"{prefix} {base}{count_str}")
+                item.setText(f"{prefix} {base}{dur_str}{count_str}")
                 item.setForeground(QColor(color))
                 break
 

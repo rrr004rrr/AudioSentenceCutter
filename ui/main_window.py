@@ -371,6 +371,20 @@ class MainWindow(QMainWindow):
         remove_btn.clicked.connect(self.remove_file)
         left_layout.addWidget(remove_btn)
 
+        proj_row = QWidget()
+        proj_layout = QHBoxLayout(proj_row)
+        proj_layout.setContentsMargins(0, 0, 0, 0)
+        proj_layout.setSpacing(4)
+        save_btn = QPushButton("💾 存檔")
+        save_btn.setToolTip("將目前已匯入的音檔、所有編輯結果與勾選狀態存成專案檔（.json）")
+        save_btn.clicked.connect(self.save_project)
+        load_btn = QPushButton("📂 讀檔")
+        load_btn.setToolTip("從先前存的專案檔還原所有音檔與編輯狀態")
+        load_btn.clicked.connect(self.load_project)
+        proj_layout.addWidget(save_btn)
+        proj_layout.addWidget(load_btn)
+        left_layout.addWidget(proj_row)
+
         self.ffmpeg_btn = QPushButton("⚙ 設定 ffmpeg")
         self.ffmpeg_btn.clicked.connect(self._set_ffmpeg_path)
         self.ffmpeg_btn.setToolTip("手動指定 ffmpeg.exe 路徑（找不到 ffmpeg 時使用）")
@@ -759,6 +773,112 @@ class MainWindow(QMainWindow):
             "音檔 (*.mp3 *.wav *.m4a *.flac *.ogg);;所有檔案 (*.*)",
         )
         self._add_paths(files)
+
+    # -----------------------------------------------------------------------
+    # Project save / load
+    # -----------------------------------------------------------------------
+    PROJECT_VERSION = 1
+
+    def save_project(self):
+        if not self.file_paths:
+            QMessageBox.information(self, "提示", "沒有可以存檔的內容。")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "儲存專案", "project.ascproj.json",
+            "AudioSentenceCutter 專案 (*.ascproj.json *.json);;所有檔案 (*.*)",
+        )
+        if not path:
+            return
+
+        files = []
+        for fp in self.file_paths:
+            segs = self.segments_cache.get(fp, [])
+            sel = sorted(self.cross_file_selection.get(fp, set()))
+            files.append({
+                "path": fp,
+                "duration": self.audio_duration.get(fp),
+                "segments": [
+                    {
+                        "start": s.start,
+                        "end": s.end,
+                        "text": s.text,
+                        "filename": getattr(s, "filename", ""),
+                    }
+                    for s in segs
+                ],
+                "selected_indices": sel,
+            })
+
+        payload = {
+            "version": self.PROJECT_VERSION,
+            "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "files": files,
+        }
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            self.statusBar().showMessage(f"已存檔：{path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "存檔失敗", str(exc))
+
+    def load_project(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "讀取專案", "",
+            "AudioSentenceCutter 專案 (*.ascproj.json *.json);;所有檔案 (*.*)",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as exc:
+            QMessageBox.critical(self, "讀檔失敗", str(exc))
+            return
+
+        if not isinstance(payload, dict) or "files" not in payload:
+            QMessageBox.critical(self, "讀檔失敗", "檔案格式不正確。")
+            return
+
+        # Mirror each file's segments to the per-audio .segments.json so the
+        # background worker skips transcription and loads exactly what the
+        # project stored.
+        valid_paths = []
+        missing = []
+        for entry in payload["files"]:
+            audio_path = entry.get("path")
+            if not audio_path:
+                continue
+            if not os.path.isfile(audio_path):
+                missing.append(audio_path)
+                continue
+            segments = entry.get("segments", [])
+            try:
+                cache_path = audio_path + ".segments.json"
+                with open(cache_path, "w", encoding="utf-8") as f:
+                    json.dump(segments, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+            valid_paths.append(audio_path)
+            # Restore checked indices now; table refresh after load will
+            # re-bind them.
+            sel = set(entry.get("selected_indices", []))
+            if sel:
+                self.cross_file_selection[audio_path] = sel
+
+        added = self._add_paths(valid_paths)
+        self.statusBar().showMessage(
+            f"已讀檔：加入 {added} 個音檔" +
+            (f"（{len(missing)} 個找不到檔案，已略過）" if missing else "")
+        )
+        if missing:
+            QMessageBox.warning(
+                self, "部分檔案遺失",
+                "下列音檔在原路徑找不到，已從專案略過：\n\n"
+                + "\n".join(missing[:10])
+                + ("\n…" if len(missing) > 10 else ""),
+            )
 
     def add_files_from_list(self):
         """Import only the audio files whose basenames appear in a user-

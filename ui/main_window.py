@@ -550,6 +550,17 @@ class MainWindow(QMainWindow):
         self.search_result_label.setFixedWidth(120)
         layout.addWidget(self.search_result_label)
 
+        layout.addWidget(_sep())
+
+        self.snap_boundaries_cb = QCheckBox("邊界連動")
+        self.snap_boundaries_cb.setChecked(True)
+        self.snap_boundaries_cb.setToolTip(
+            "勾選後，編輯某段的結束秒數時，下一段的開始秒數會自動同步；\n"
+            "編輯某段的開始秒數時，上一段的結束秒數會自動同步。\n"
+            "確保相鄰段落之間沒有縫隙。"
+        )
+        layout.addWidget(self.snap_boundaries_cb)
+
         return bar
 
     def _on_search_text_changed(self, text: str):
@@ -1102,6 +1113,7 @@ class MainWindow(QMainWindow):
             try:
                 seg.start = float(item.text())
                 self._update_dur_cell(row, seg)
+                self._propagate_boundary(row, "start")
                 self.waveform.set_region(seg.start, seg.end)
                 self._persist_changes()
             except ValueError:
@@ -1110,6 +1122,7 @@ class MainWindow(QMainWindow):
             try:
                 seg.end = float(item.text())
                 self._update_dur_cell(row, seg)
+                self._propagate_boundary(row, "end")
                 self.waveform.set_region(seg.start, seg.end)
                 self._persist_changes()
             except ValueError:
@@ -1135,6 +1148,7 @@ class MainWindow(QMainWindow):
         if self.selected_row < 0 or self.selected_row >= len(self.current_segments):
             return
         seg = self.current_segments[self.selected_row]
+        old_start, old_end = seg.start, seg.end
         seg.start = round(start, 3)
         seg.end = round(end, 3)
 
@@ -1148,6 +1162,10 @@ class MainWindow(QMainWindow):
             if item:
                 item.setText(val)
         self._updating_table = False
+        if seg.start != old_start:
+            self._propagate_boundary(self.selected_row, "start")
+        if seg.end != old_end:
+            self._propagate_boundary(self.selected_row, "end")
         self._persist_changes()
 
     # -----------------------------------------------------------------------
@@ -1614,6 +1632,46 @@ class MainWindow(QMainWindow):
     def _reindex(self):
         for i, seg in enumerate(self.current_segments):
             seg.id = i
+
+    # -----------------------------------------------------------------------
+    # Adjacent-boundary snapping
+    # -----------------------------------------------------------------------
+    def _propagate_boundary(self, row: int, changed: str):
+        """If 邊界連動 is on, force the adjacent segment's facing edge to match
+        the edited boundary. `changed` is 'start' or 'end'."""
+        if not getattr(self, "snap_boundaries_cb", None) or not self.snap_boundaries_cb.isChecked():
+            return
+        if not (0 <= row < len(self.current_segments)):
+            return
+        seg = self.current_segments[row]
+        self._updating_table = True
+        try:
+            if changed == "end" and row + 1 < len(self.current_segments):
+                nxt = self.current_segments[row + 1]
+                if nxt.start != seg.end:
+                    nxt.start = round(seg.end, 3)
+                    if nxt.end < nxt.start:
+                        nxt.end = nxt.start
+                    self._update_row_cells(row + 1, nxt)
+            elif changed == "start" and row - 1 >= 0:
+                prv = self.current_segments[row - 1]
+                if prv.end != seg.start:
+                    prv.end = round(seg.start, 3)
+                    if prv.start > prv.end:
+                        prv.start = prv.end
+                    self._update_row_cells(row - 1, prv)
+        finally:
+            self._updating_table = False
+
+    def _update_row_cells(self, row: int, seg):
+        for col, val in [
+            (3, format_seconds(seg.start)),
+            (4, format_seconds(seg.end)),
+            (5, f"{format_seconds(seg.end - seg.start)}s"),
+        ]:
+            item = self.table.item(row, col)
+            if item:
+                item.setText(val)
 
     # -----------------------------------------------------------------------
     # Undo

@@ -1,4 +1,5 @@
 import os
+import copy
 import json
 import threading
 import time
@@ -14,8 +15,9 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox,
     QFileDialog, QProgressBar, QComboBox, QMessageBox,
     QAbstractItemView, QSizePolicy, QSpinBox, QDoubleSpinBox,
+    QApplication,
 )
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QShortcut, QKeySequence
 from pydub import AudioSegment as PydubAudio
 
 from core.audio_loader import AudioLoader
@@ -281,6 +283,11 @@ class MainWindow(QMainWindow):
         self.file_status_map: dict = {}   # path -> status string
         # cross-file selection: file_path -> set of segment indices
         self.cross_file_selection: dict = {}
+        # Undo: file_path -> list of segment-list snapshots (most recent last)
+        self._undo_stacks: dict = {}
+        self._undo_limit = 50
+        # Shift-click range support on the segment-checkbox column
+        self._last_checkbox_row: int = -1
 
         # --- Queue worker (single persistent background thread) ---
         self.queue_worker = QueueWorker()
@@ -309,6 +316,11 @@ class MainWindow(QMainWindow):
 
         # Enable drag-and-drop for audio files anywhere on the window
         self.setAcceptDrops(True)
+
+        # Ctrl+Z undo (Cmd+Z on macOS via QKeySequence.StandardKey.Undo)
+        self._undo_shortcut = QShortcut(QKeySequence.StandardKey.Undo, self)
+        self._undo_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._undo_shortcut.activated.connect(self.undo)
 
     # -----------------------------------------------------------------------
     # UI Layout
@@ -363,6 +375,7 @@ class MainWindow(QMainWindow):
         self.waveform = WaveformWidget()
         self.waveform.setFixedHeight(170)
         self.waveform.region_changed.connect(self._on_waveform_region_changed)
+        self.waveform.region_drag_started.connect(self._snapshot)
         right_splitter.addWidget(self.waveform)
 
         # Bottom: controls + table + action bar
@@ -923,6 +936,7 @@ class MainWindow(QMainWindow):
     # -----------------------------------------------------------------------
     def _refresh_table(self):
         self._updating_table = True
+        self._last_checkbox_row = -1
         self.table.setRowCount(0)
 
         for i, seg in enumerate(self.current_segments):
@@ -1005,6 +1019,10 @@ class MainWindow(QMainWindow):
         if not (0 <= row < len(self.current_segments)):
             return
         seg = self.current_segments[row]
+
+        if col not in (3, 4, 6, 7):
+            return
+        self._snapshot()
 
         if col == 3:
             try:
@@ -1241,11 +1259,37 @@ class MainWindow(QMainWindow):
     def _on_checkbox_changed(self, segment_idx: int, state: int):
         if self._updating_table or not self.current_file:
             return
+        is_checked = (state == 2)  # Qt.CheckState.Checked
+        mods = QApplication.keyboardModifiers()
         self.cross_file_selection.setdefault(self.current_file, set())
-        if state == 2:  # Qt.CheckState.Checked
-            self.cross_file_selection[self.current_file].add(segment_idx)
+
+        if (mods & Qt.KeyboardModifier.ShiftModifier
+                and self._last_checkbox_row >= 0
+                and self._last_checkbox_row != segment_idx):
+            lo = min(self._last_checkbox_row, segment_idx)
+            hi = max(self._last_checkbox_row, segment_idx)
+            sel = self.cross_file_selection[self.current_file]
+            self._updating_table = True
+            for r in range(lo, hi + 1):
+                container = self.table.cellWidget(r, 0)
+                if not container:
+                    continue
+                cb = container.findChild(QCheckBox)
+                if not cb:
+                    continue
+                cb.setChecked(is_checked)
+                if is_checked:
+                    sel.add(r)
+                else:
+                    sel.discard(r)
+            self._updating_table = False
         else:
-            self.cross_file_selection[self.current_file].discard(segment_idx)
+            if is_checked:
+                self.cross_file_selection[self.current_file].add(segment_idx)
+            else:
+                self.cross_file_selection[self.current_file].discard(segment_idx)
+
+        self._last_checkbox_row = segment_idx
         self._update_selection_label()
         self._update_file_list_indicators()
 
@@ -1299,6 +1343,7 @@ class MainWindow(QMainWindow):
                 )
                 return
 
+        self._snapshot()
         first_seg = self.current_segments[rows[0]]
         last_seg  = self.current_segments[rows[-1]]
         merged_text = " ".join(self.current_segments[r].text for r in rows)
@@ -1336,6 +1381,7 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._snapshot()
         new_seg = Segment(id=0, start=r_start, end=r_end, text="")
 
         # Insert and re-sort by start time
@@ -1373,6 +1419,7 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._snapshot()
         seg1 = Segment(id=self.selected_row,
                        start=seg.start, end=split_point, text=seg.text)
         seg2 = Segment(id=self.selected_row + 1,
@@ -1493,6 +1540,40 @@ class MainWindow(QMainWindow):
     def _reindex(self):
         for i, seg in enumerate(self.current_segments):
             seg.id = i
+
+    # -----------------------------------------------------------------------
+    # Undo
+    # -----------------------------------------------------------------------
+    def _snapshot(self):
+        """Push the current segment list onto the undo stack for the current
+        file. Segment instances are shallow-copied so future mutations don't
+        bleed back into history."""
+        if not self.current_file:
+            return
+        stack = self._undo_stacks.setdefault(self.current_file, [])
+        stack.append([copy.copy(s) for s in self.current_segments])
+        if len(stack) > self._undo_limit:
+            del stack[0:len(stack) - self._undo_limit]
+
+    def undo(self):
+        if not self.current_file:
+            return
+        stack = self._undo_stacks.get(self.current_file)
+        if not stack:
+            self.statusBar().showMessage("沒有可復原的操作", 2000)
+            return
+        prev = stack.pop()
+        self.current_segments = prev
+        self.segments_cache[self.current_file] = list(prev)
+        self._reindex()
+        # Reset checkbox state — old indices may not map cleanly post-undo
+        self.cross_file_selection[self.current_file] = set()
+        self._refresh_table()
+        self.waveform.set_segments(self.current_segments)
+        self._update_selection_label()
+        self._update_file_list_indicators()
+        self._persist_changes()
+        self.statusBar().showMessage("已復原一步", 2000)
 
     def _clear_current_file_selection(self):
         if self.current_file in self.cross_file_selection:

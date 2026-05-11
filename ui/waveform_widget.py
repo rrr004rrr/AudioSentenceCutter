@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QSizePolicy
 
 class WaveformWidget(QWidget):
     region_changed = Signal(float, float)   # start, end (seconds)
+    region_drag_started = Signal()          # emitted on the first change of each user drag
     position_clicked = Signal(float)        # clicked position (seconds)
 
     def __init__(self, parent=None):
@@ -14,6 +15,7 @@ class WaveformWidget(QWidget):
         self.duration = 0.0
         self.samples = None
         self._block_region_signal = False
+        self._region_drag_active = False
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setMinimumHeight(140)
@@ -43,6 +45,7 @@ class WaveformWidget(QWidget):
         self.region.setZValue(10)
         self.plot_widget.addItem(self.region)
         self.region.sigRegionChanged.connect(self._on_region_changed)
+        self.region.sigRegionChangeFinished.connect(self._on_region_finished)
 
         # Playback position line
         self.position_line = pg.InfiniteLine(
@@ -128,5 +131,11 @@ class WaveformWidget(QWidget):
     def _on_region_changed(self):
         if self._block_region_signal:
             return
+        if not self._region_drag_active:
+            self._region_drag_active = True
+            self.region_drag_started.emit()
         start, end = self.region.getRegion()
         self.region_changed.emit(start, end)
+
+    def _on_region_finished(self):
+        self._region_drag_active = False

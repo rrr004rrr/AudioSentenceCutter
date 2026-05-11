@@ -294,6 +294,9 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(STYLESHEET)
         self._init_ffmpeg()
 
+        # Enable drag-and-drop for audio files anywhere on the window
+        self.setAcceptDrops(True)
+
     # -----------------------------------------------------------------------
     # UI Layout
     # -----------------------------------------------------------------------
@@ -611,6 +614,8 @@ class MainWindow(QMainWindow):
     # -----------------------------------------------------------------------
     # File management
     # -----------------------------------------------------------------------
+    SUPPORTED_AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".flac", ".ogg")
+
     def add_files(self):
         files, _ = QFileDialog.getOpenFileNames(
             self,
@@ -618,26 +623,39 @@ class MainWindow(QMainWindow):
             "",
             "音檔 (*.mp3 *.wav *.m4a *.flac *.ogg);;所有檔案 (*.*)",
         )
-        for path in files:
-            if path not in self.file_paths:
-                self.file_paths.append(path)
-                self.file_status_map[path] = "queued"
+        self._add_paths(files)
 
-                item = QListWidgetItem()
-                item.setData(Qt.ItemDataRole.UserRole, path)
-                item.setToolTip(path)
-                self.file_list_widget.addItem(item)
-                self._update_file_item(path, "queued")
+    def _add_paths(self, paths):
+        """Queue a list of audio file paths for processing. Skips duplicates
+        and files with unsupported extensions."""
+        added = 0
+        for path in paths:
+            if not path or not os.path.isfile(path):
+                continue
+            if os.path.splitext(path)[1].lower() not in self.SUPPORTED_AUDIO_EXTS:
+                continue
+            if path in self.file_paths:
+                continue
+            self.file_paths.append(path)
+            self.file_status_map[path] = "queued"
 
-                # Immediately enqueue for background processing
-                self.queue_worker.enqueue(
-                    path,
-                    self.model_combo.currentText(),
-                    self.lang_combo.currentData(),
-                    self.silence_spin.value(),
-                    self.vad_spin.value(),
-                )
-        self._update_queue_label()
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            item.setToolTip(path)
+            self.file_list_widget.addItem(item)
+            self._update_file_item(path, "queued")
+
+            self.queue_worker.enqueue(
+                path,
+                self.model_combo.currentText(),
+                self.lang_combo.currentData(),
+                self.silence_spin.value(),
+                self.vad_spin.value(),
+            )
+            added += 1
+        if added:
+            self._update_queue_label()
+        return added
 
     def remove_file(self):
         row = self.file_list_widget.currentRow()
@@ -1086,6 +1104,48 @@ class MainWindow(QMainWindow):
         self._sd_play(chunk, sr, r_start, r_end - r_start)
         self.play_all_btn.setEnabled(False)
         self.play_region_btn.setEnabled(False)
+
+    # -----------------------------------------------------------------------
+    # Drag-and-drop audio files
+    # -----------------------------------------------------------------------
+    def dragEnterEvent(self, event):
+        mime = event.mimeData()
+        if mime.hasUrls() and any(
+            u.isLocalFile() and os.path.splitext(u.toLocalFile())[1].lower()
+            in self.SUPPORTED_AUDIO_EXTS
+            for u in mime.urls()
+        ):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        paths = []
+        for url in event.mimeData().urls():
+            if not url.isLocalFile():
+                continue
+            local = url.toLocalFile()
+            if os.path.isdir(local):
+                # Add every supported file in the folder (non-recursive)
+                for name in sorted(os.listdir(local)):
+                    full = os.path.join(local, name)
+                    if (os.path.isfile(full) and
+                            os.path.splitext(name)[1].lower() in self.SUPPORTED_AUDIO_EXTS):
+                        paths.append(full)
+            else:
+                paths.append(local)
+        added = self._add_paths(paths)
+        if added:
+            event.acceptProposedAction()
+            self.statusBar().showMessage(f"已加入 {added} 個音檔")
+        else:
+            super().dropEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Space:

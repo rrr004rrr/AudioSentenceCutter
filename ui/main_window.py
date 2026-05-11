@@ -545,6 +545,12 @@ class MainWindow(QMainWindow):
         self.split_btn.clicked.connect(self.split_at_region)
         layout.addWidget(self.split_btn)
 
+        self.add_seg_btn = QPushButton("＋ 新增段落")
+        self.add_seg_btn.setObjectName("add_btn")
+        self.add_seg_btn.setToolTip("以波形上紫色選取區域新增一個段落（自動依時間排序）")
+        self.add_seg_btn.clicked.connect(self.add_segment_from_region)
+        layout.addWidget(self.add_seg_btn)
+
         layout.addStretch()
 
         self.export_sel_btn = QPushButton("匯出選取")
@@ -1226,6 +1232,43 @@ class MainWindow(QMainWindow):
         self._refresh_table()
         self.waveform.set_segments(self.current_segments)
         self.table.selectRow(rows[0])
+
+    def add_segment_from_region(self):
+        """Insert a new segment at the current waveform region, keeping the
+        list sorted by start time."""
+        if not self.current_file:
+            QMessageBox.information(self, "提示", "請先選擇音檔。")
+            return
+
+        r_start, r_end = self.waveform.region.getRegion()
+        r_start = round(max(0.0, r_start), 3)
+        r_end = round(min(self.waveform.duration or r_end, r_end), 3)
+        if r_end <= r_start:
+            QMessageBox.information(
+                self, "提示",
+                "請先在波形上拖曳出一個有效的選取區域（起點需小於終點）。",
+            )
+            return
+
+        new_seg = Segment(id=0, start=r_start, end=r_end, text="")
+
+        # Insert and re-sort by start time
+        self.current_segments.append(new_seg)
+        self.current_segments.sort(key=lambda s: (s.start, s.end))
+        new_row = self.current_segments.index(new_seg)
+
+        # Shift cross-file selection indices that are >= new_row
+        existing = self.cross_file_selection.get(self.current_file, set())
+        if existing:
+            self.cross_file_selection[self.current_file] = {
+                (idx + 1 if idx >= new_row else idx) for idx in existing
+            }
+
+        self._reindex()
+        self._persist_changes()
+        self._refresh_table()
+        self.waveform.set_segments(self.current_segments)
+        self.table.selectRow(new_row)
 
     def split_at_region(self):
         if self.selected_row < 0 or self.selected_row >= len(self.current_segments):

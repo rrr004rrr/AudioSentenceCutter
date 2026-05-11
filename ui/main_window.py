@@ -24,7 +24,7 @@ from core.audio_loader import AudioLoader
 from core.transcriber import Transcriber, Segment
 from core.exporter import Exporter
 from utils.ffmpeg_helper import find_ffmpeg, apply_ffmpeg_path, is_winerror2, FFMPEG_HELP
-from utils.time_format import format_seconds
+from utils.time_format import format_seconds, TIMECODE_MODES, build_timecode_string
 from ui.waveform_widget import WaveformWidget
 
 
@@ -683,6 +683,18 @@ class MainWindow(QMainWindow):
         self.export_ts_btn.clicked.connect(self.export_timestamps)
         self.export_ts_btn.setToolTip("將當前音檔所有片段的開始/結束秒數匯出為 timestamps.txt")
         layout.addWidget(self.export_ts_btn)
+
+        layout.addWidget(QLabel("秒數格式："))
+        self.timecode_mode_combo = QComboBox()
+        for m in TIMECODE_MODES:
+            self.timecode_mode_combo.addItem(m, m)
+        self.timecode_mode_combo.setToolTip(
+            "play: start1,end1,start2,end2,...,startN,endN\n"
+            "repeat-1: 00.00,end1,start2,end2,...,startN,endN\n"
+            "repeat-2: end1,start2,end2,start3,...,endN,音檔總秒數"
+        )
+        self.timecode_mode_combo.setFixedWidth(90)
+        layout.addWidget(self.timecode_mode_combo)
 
         layout.addWidget(_sep())
 
@@ -1567,7 +1579,19 @@ class MainWindow(QMainWindow):
                 all_results.extend(results)
 
             Exporter.export_json(all_results, output_dir)
-            Exporter.export_timestamps_txt(all_results, output_dir)
+            # Multi-file selection: emit one timestamps file per source file
+            # so each file's timecodes use the right total-duration value.
+            mode = self.timecode_mode_combo.currentData()
+            suffix = "" if mode == "play" else f"_{mode}"
+            for path, segs in by_file.items():
+                per_file = [{"start": s.start, "end": s.end} for s in segs]
+                total = self.audio_duration.get(path, 0.0)
+                base = os.path.splitext(os.path.basename(path))[0]
+                Exporter.export_timestamps_txt(
+                    per_file, output_dir,
+                    mode=mode, total_duration=total,
+                    filename=f"{base}.timestamps{suffix}.txt",
+                )
             fc = len(by_file)
             detail = f"（來自 {fc} 個音檔）" if fc > 1 else ""
             QMessageBox.information(
@@ -1598,7 +1622,12 @@ class MainWindow(QMainWindow):
                 bitrate=self.bitrate_combo.currentText(),
             )
             Exporter.export_json(results, output_dir)
-            Exporter.export_timestamps_txt(results, output_dir)
+            mode = self.timecode_mode_combo.currentData()
+            Exporter.export_timestamps_txt(
+                results, output_dir,
+                mode=mode,
+                total_duration=self.audio_duration.get(self.current_file, 0.0),
+            )
             QMessageBox.information(
                 self, "匯出完成",
                 f"成功匯出 {len(results)} 個音檔\n輸出位置：{output_dir}",
@@ -1607,30 +1636,30 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "匯出錯誤", f"匯出失敗:\n{exc}")
 
     def export_timestamps(self):
-        """Export timestamps.txt for the current file's segments."""
+        """Export timestamps.txt for the current file's segments using the
+        currently selected timecode format."""
         if not self.current_file or not self.current_segments:
             QMessageBox.information(self, "提示", "沒有片段可以匯出。")
             return
 
+        mode = self.timecode_mode_combo.currentData()
+        total = self.audio_duration.get(self.current_file, 0.0)
+        default_name = f"timestamps_{mode}.txt"
         path, _ = QFileDialog.getSaveFileName(
-            self, "儲存時間戳檔案", "timestamps.txt",
+            self, "儲存時間戳檔案", default_name,
             "文字檔 (*.txt);;所有檔案 (*.*)",
         )
         if not path:
             return
 
         try:
-            results = [
-                {"start": seg.start, "end": seg.end}
-                for seg in self.current_segments
-            ]
-            values = []
-            for r in results:
-                values.append(str(r["start"]))
-                values.append(str(r["end"]))
+            content = build_timecode_string(self.current_segments, total, mode)
             with open(path, "w", encoding="utf-8") as f:
-                f.write(",".join(values))
-            QMessageBox.information(self, "匯出完成", f"時間戳已儲存至：\n{path}")
+                f.write(content)
+            QMessageBox.information(
+                self, "匯出完成",
+                f"時間戳已儲存至：\n{path}\n格式：{mode}",
+            )
         except Exception as exc:
             QMessageBox.critical(self, "匯出錯誤", f"匯出失敗:\n{exc}")
 

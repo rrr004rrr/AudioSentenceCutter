@@ -2,6 +2,7 @@ import os
 import json
 from pydub import AudioSegment as PydubAudio
 from utils.filename_cleaner import clean_filename
+from utils.time_format import build_timecode_string
 
 
 class Exporter:
@@ -93,12 +94,30 @@ class Exporter:
             json.dump(results, f, ensure_ascii=False, indent=2)
 
     @staticmethod
-    def export_timestamps_txt(results: list, output_dir: str):
-        """Export timestamps.txt: start1,end1,start2,end2,... on one line."""
-        values = []
-        for r in results:
-            values.append(str(r["start"]))
-            values.append(str(r["end"]))
-        txt_path = os.path.join(output_dir, "timestamps.txt")
+    def export_timestamps_txt(results: list, output_dir: str,
+                              mode: str = "play",
+                              total_duration: float = 0.0,
+                              filename: str = None):
+        """Export a single timestamps file using the selected timecode mode.
+
+        `results` is a list of dicts with start/end keys. `total_duration`
+        is the source audio's full length (seconds) — used as the trailing
+        value in repeat-2 mode. `filename` overrides the default name so
+        callers can write per-source-file timestamps in a multi-file export.
+        """
+        # Reuse the shared formatter — wrap dicts in lightweight objects.
+        class _Seg:
+            __slots__ = ("start", "end")
+            def __init__(self, s, e):
+                self.start = s
+                self.end = e
+
+        segs = [_Seg(r["start"], r["end"]) for r in results]
+        content = build_timecode_string(segs, total_duration, mode)
+
+        if filename is None:
+            suffix = "" if mode == "play" else f"_{mode}"
+            filename = f"timestamps{suffix}.txt"
+        txt_path = os.path.join(output_dir, filename)
         with open(txt_path, "w", encoding="utf-8") as f:
-            f.write(",".join(values))
+            f.write(content)

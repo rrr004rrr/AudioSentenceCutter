@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox,
     QFileDialog, QProgressBar, QComboBox, QMessageBox,
     QAbstractItemView, QSizePolicy, QSpinBox, QDoubleSpinBox,
-    QApplication,
+    QApplication, QLineEdit,
 )
 from PySide6.QtGui import QColor, QFont, QShortcut, QKeySequence
 from pydub import AudioSegment as PydubAudio
@@ -322,6 +322,11 @@ class MainWindow(QMainWindow):
         self._undo_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self._undo_shortcut.activated.connect(self.undo)
 
+        # Ctrl+F focus search
+        self._find_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
+        self._find_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._find_shortcut.activated.connect(lambda: self.search_input.setFocus())
+
     # -----------------------------------------------------------------------
     # UI Layout
     # -----------------------------------------------------------------------
@@ -389,6 +394,9 @@ class MainWindow(QMainWindow):
 
         vad_bar = self._build_vad_bar()
         bottom_layout.addWidget(vad_bar)
+
+        search_bar = self._build_search_bar()
+        bottom_layout.addWidget(search_bar)
 
         self._build_segment_table()
         bottom_layout.addWidget(self.table)
@@ -514,6 +522,72 @@ class MainWindow(QMainWindow):
         layout.addWidget(hint)
 
         return bar
+
+    def _build_search_bar(self) -> QWidget:
+        bar = QWidget()
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        layout.addWidget(QLabel("搜尋："))
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("輸入文字搜尋句子，Enter 跳下一個")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.returnPressed.connect(lambda: self._search_jump(forward=True))
+        self.search_input.textChanged.connect(self._on_search_text_changed)
+        layout.addWidget(self.search_input, 1)
+
+        self.search_prev_btn = QPushButton("上一個")
+        self.search_prev_btn.clicked.connect(lambda: self._search_jump(forward=False))
+        layout.addWidget(self.search_prev_btn)
+
+        self.search_next_btn = QPushButton("下一個")
+        self.search_next_btn.clicked.connect(lambda: self._search_jump(forward=True))
+        layout.addWidget(self.search_next_btn)
+
+        self.search_result_label = QLabel("")
+        self.search_result_label.setStyleSheet("color: #a6adc8; font-size: 11px;")
+        self.search_result_label.setFixedWidth(120)
+        layout.addWidget(self.search_result_label)
+
+        return bar
+
+    def _on_search_text_changed(self, text: str):
+        """Live-search: when the query is non-empty, jump to the first match
+        without moving past matches the user may still be typing into."""
+        if not text:
+            self.search_result_label.setText("")
+            return
+        self._search_jump(forward=True, from_current=True)
+
+    def _search_jump(self, forward: bool = True, from_current: bool = False):
+        query = self.search_input.text().strip().lower()
+        if not query or not self.current_segments:
+            self.search_result_label.setText("")
+            return
+
+        matches = [i for i, seg in enumerate(self.current_segments)
+                   if query in (seg.text or "").lower()]
+        if not matches:
+            self.search_result_label.setText("找不到")
+            return
+
+        cur = self.table.currentRow()
+        if from_current:
+            # Pick first match at or after the current row (wrap around)
+            target = next((m for m in matches if m >= cur), matches[0])
+        elif forward:
+            target = next((m for m in matches if m > cur), matches[0])
+        else:
+            target = next((m for m in reversed(matches) if m < cur), matches[-1])
+
+        self.table.selectRow(target)
+        self.table.scrollToItem(
+            self.table.item(target, 6),
+            QAbstractItemView.ScrollHint.PositionAtCenter,
+        )
+        pos = matches.index(target) + 1
+        self.search_result_label.setText(f"{pos}/{len(matches)} 個結果")
 
     def _build_segment_table(self):
         self.table = QTableWidget()

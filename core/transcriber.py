@@ -8,6 +8,9 @@ class Segment:
     start: float   # seconds
     end: float     # seconds
     text: str
+    # Custom export filename override. When empty, exporter derives the name
+    # from `text`. Lets users name files independently of the transcript.
+    filename: str = ""
 
 
 class Transcriber:

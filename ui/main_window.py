@@ -126,7 +126,13 @@ class QueueWorker(QObject):
             with open(cache_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             return [
-                Segment(id=i, start=d["start"], end=d["end"], text=d["text"])
+                Segment(
+                    id=i,
+                    start=d["start"],
+                    end=d["end"],
+                    text=d["text"],
+                    filename=d.get("filename", ""),
+                )
                 for i, d in enumerate(data)
             ]
         except Exception:
@@ -136,8 +142,15 @@ class QueueWorker(QObject):
     def _save_cache(file_path: str, segments: list):
         try:
             cache_path = file_path + ".segments.json"
-            data = [{"start": s.start, "end": s.end, "text": s.text}
-                    for s in segments]
+            data = [
+                {
+                    "start": s.start,
+                    "end": s.end,
+                    "text": s.text,
+                    "filename": getattr(s, "filename", ""),
+                }
+                for s in segments
+            ]
             with open(cache_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception:
@@ -491,15 +504,16 @@ class MainWindow(QMainWindow):
 
     def _build_segment_table(self):
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
+        self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(
-            ["☑", "▶", "#", "開始", "結束", "長度", "文字"]
+            ["☑", "▶", "#", "開始", "結束", "長度", "文字", "檔名"]
         )
 
         hh = self.table.horizontalHeader()
         for col in range(6):
             hh.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(7, QHeaderView.ResizeMode.Interactive)
 
         self.table.setColumnWidth(0, 36)
         self.table.setColumnWidth(1, 40)
@@ -507,6 +521,7 @@ class MainWindow(QMainWindow):
         self.table.setColumnWidth(3, 75)
         self.table.setColumnWidth(4, 75)
         self.table.setColumnWidth(5, 65)
+        self.table.setColumnWidth(7, 180)
 
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -961,6 +976,14 @@ class MainWindow(QMainWindow):
             text_item = QTableWidgetItem(seg.text)
             self.table.setItem(i, 6, text_item)
 
+            # Col 7: filename override (empty = auto-derive from text on export)
+            fname_item = QTableWidgetItem(getattr(seg, "filename", ""))
+            fname_item.setToolTip(
+                "輸出檔名（留空時自動使用「文字」欄內容）。\n"
+                "用於將辨識文字與檔名分開命名。"
+            )
+            self.table.setItem(i, 7, fname_item)
+
             self.table.setRowHeight(i, 36)
 
         self._updating_table = False
@@ -1001,6 +1024,9 @@ class MainWindow(QMainWindow):
                 pass
         elif col == 6:
             seg.text = item.text()
+            self._persist_changes()
+        elif col == 7:
+            seg.filename = item.text().strip()
             self._persist_changes()
 
     def _update_dur_cell(self, row: int, seg):
@@ -1480,8 +1506,15 @@ class MainWindow(QMainWindow):
         self.segments_cache[self.current_file] = list(self.current_segments)
         try:
             cache_path = self.current_file + ".segments.json"
-            data = [{"start": s.start, "end": s.end, "text": s.text}
-                    for s in self.current_segments]
+            data = [
+                {
+                    "start": s.start,
+                    "end": s.end,
+                    "text": s.text,
+                    "filename": getattr(s, "filename", ""),
+                }
+                for s in self.current_segments
+            ]
             with open(cache_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception:

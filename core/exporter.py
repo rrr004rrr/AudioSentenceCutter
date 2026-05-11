@@ -50,7 +50,13 @@ class Exporter:
             if silence_after:
                 chunk = chunk + silence_after
 
-            base_name = clean_filename(seg.text) if seg.text.strip() else f"segment_{i + 1:04d}"
+            custom = getattr(seg, "filename", "")
+            if custom and custom.strip():
+                base_name = clean_filename(custom)
+            elif seg.text.strip():
+                base_name = clean_filename(seg.text)
+            else:
+                base_name = f"segment_{i + 1:04d}"
             filename = f"{base_name}.{fmt}"
 
             # Avoid duplicate filenames

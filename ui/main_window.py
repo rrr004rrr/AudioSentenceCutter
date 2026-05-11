@@ -358,6 +358,15 @@ class MainWindow(QMainWindow):
         add_btn.clicked.connect(self.add_files)
         left_layout.addWidget(add_btn)
 
+        filter_btn = QPushButton("依清單匯入…")
+        filter_btn.setToolTip(
+            "選取一個音檔資料夾與一份檔名清單（.txt，每行一個檔名），\n"
+            "只匯入清單中有列出的音檔。\n"
+            "比對不分大小寫，可含或不含副檔名。"
+        )
+        filter_btn.clicked.connect(self.add_files_from_list)
+        left_layout.addWidget(filter_btn)
+
         remove_btn = QPushButton("移除選取")
         remove_btn.clicked.connect(self.remove_file)
         left_layout.addWidget(remove_btn)
@@ -750,6 +759,58 @@ class MainWindow(QMainWindow):
             "音檔 (*.mp3 *.wav *.m4a *.flac *.ogg);;所有檔案 (*.*)",
         )
         self._add_paths(files)
+
+    def add_files_from_list(self):
+        """Import only the audio files whose basenames appear in a user-
+        supplied list (one name per line). Useful when the customer ships a
+        large folder but only a subset needs cutting."""
+        folder = QFileDialog.getExistingDirectory(self, "選擇音檔資料夾")
+        if not folder:
+            return
+
+        list_path, _ = QFileDialog.getOpenFileName(
+            self, "選擇檔名清單", "",
+            "文字檔 (*.txt);;所有檔案 (*.*)",
+        )
+        if not list_path:
+            return
+
+        try:
+            with open(list_path, "r", encoding="utf-8-sig") as f:
+                raw_lines = f.read().splitlines()
+        except Exception as exc:
+            QMessageBox.critical(self, "讀取失敗", f"無法讀取清單檔案:\n{exc}")
+            return
+
+        # Normalise: strip whitespace, drop blanks/comments, lowercase, strip ext
+        wanted = set()
+        for line in raw_lines:
+            name = line.strip().strip('"').strip("'")
+            if not name or name.startswith("#"):
+                continue
+            stem = os.path.splitext(name)[0].lower()
+            wanted.add(stem)
+
+        if not wanted:
+            QMessageBox.information(self, "提示", "清單檔內沒有有效的檔名。")
+            return
+
+        matched = []
+        for fname in sorted(os.listdir(folder)):
+            full = os.path.join(folder, fname)
+            if not os.path.isfile(full):
+                continue
+            if os.path.splitext(fname)[1].lower() not in self.SUPPORTED_AUDIO_EXTS:
+                continue
+            if os.path.splitext(fname)[0].lower() in wanted:
+                matched.append(full)
+
+        added = self._add_paths(matched)
+        missing = len(wanted) - len(matched)
+        self.statusBar().showMessage(
+            f"依清單匯入：加入 {added} 個音檔，清單共 {len(wanted)} 個名稱，"
+            f"未找到 {max(0, missing)} 個"
+        )
 
     def _add_paths(self, paths):
         """Queue a list of audio file paths for processing. Skips duplicates

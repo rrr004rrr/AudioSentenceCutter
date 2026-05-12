@@ -2,6 +2,15 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+def _log(msg: str):
+    """Forward to main.py's diagnostic logger when available."""
+    try:
+        import main as _m  # type: ignore
+        _m._log(msg)
+    except Exception:
+        pass
+
+
 @dataclass
 class Segment:
     id: int
@@ -20,12 +29,15 @@ class Transcriber:
 
     def load_model(self):
         if self.model is None:
+            _log(f"Transcriber.load_model: importing faster_whisper (model={self.model_size})")
             from faster_whisper import WhisperModel
+            _log("Transcriber.load_model: instantiating WhisperModel")
             self.model = WhisperModel(
                 self.model_size,
                 device="cpu",
                 compute_type="int8",
             )
+            _log("Transcriber.load_model: WhisperModel ready")
 
     def transcribe(
         self,
@@ -35,7 +47,9 @@ class Transcriber:
         vad_threshold: float = 0.5,
     ) -> list:
         """Transcribe audio file and return list of Segment objects."""
+        _log(f"Transcriber.transcribe: start path={audio_path!r} lang={language!r}")
         self.load_model()
+        _log("Transcriber.transcribe: model loaded, calling self.model.transcribe")
         kwargs = {
             "beam_size": 5,
             "vad_filter": True,
@@ -48,6 +62,7 @@ class Transcriber:
             kwargs["language"] = language
 
         raw_segments, info = self.model.transcribe(audio_path, **kwargs)
+        _log(f"Transcriber.transcribe: model returned generator, info.language={getattr(info, 'language', None)}")
 
         result = []
         for i, seg in enumerate(raw_segments):
@@ -65,4 +80,5 @@ class Transcriber:
         for i, seg in enumerate(result):
             seg.id = i
 
+        _log(f"Transcriber.transcribe: done, {len(result)} segments")
         return result

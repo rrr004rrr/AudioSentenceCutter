@@ -1,9 +1,11 @@
 # Core UI
-PySide6>=6.6.0
+PySide6>=6.5.0,<6.7
 
 # Waveform display
 pyqtgraph>=0.13.3
-numpy>=1.24.0
+# numpy 2.x breaks the PySide6 6.5.x ABI (compiled against numpy 1.x) and
+# also causes onnxruntime 1.18 to fail to init in frozen builds.
+numpy>=1.24.0,<2
 
 # Audio processing
 pydub>=0.25.1
@@ -11,8 +13,15 @@ pydub>=0.25.1
 # Audio playback (cross-platform, wraps PortAudio)
 sounddevice>=0.4.6
 
-# AI speech recognition
-faster-whisper>=1.0.0
+# AI speech recognition. Pinned versions are required for PyInstaller
+# bundling on Windows:
+#   * faster-whisper 1.1+ pulls in ctranslate2 4.5+, whose CUDA probe
+#     access-violates inside a frozen exe even with device='cpu'.
+#   * onnxruntime 1.19+ was compiled against numpy 2.x and its
+#     pybind11_state.pyd fails DllMain init with numpy 1.x.
+faster-whisper==1.0.3
+ctranslate2==4.4.0
+onnxruntime==1.18.0
 
 # FFmpeg Python bindings (optional helper, ffmpeg binary required separately)
 ffmpeg-python>=0.2.0

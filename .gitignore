@@ -4,11 +4,19 @@ __pycache__/
 *.pyd
 dist/
 build/
-*.spec
 .claude/
+
+# Skip pyinstaller-generated specs, but keep the hand-maintained build.spec.
+AudioSentenceCutter.spec
+AI音檔分割工具.spec
+
 *.segments.json
 *.mp3
 *.wav
 *.m4a
 *.flac
 *.ogg
+
+# Bundled ffmpeg binaries (~250 MB) — too large for the repo.
+# Drop the Windows static build into vendor/ffmpeg/ before running build.bat.
+vendor/ffmpeg/*.exe

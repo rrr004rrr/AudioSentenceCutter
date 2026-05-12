@@ -691,6 +691,15 @@ class MainWindow(QMainWindow):
         self.add_seg_btn.clicked.connect(self.add_segment_from_region)
         layout.addWidget(self.add_seg_btn)
 
+        self.smart_split_btn = QPushButton("🔪 拆分單字")
+        self.smart_split_btn.setToolTip(
+            "自動偵測「單字段落」內部的靜音空隙並拆分為兩段，\n"
+            "適合教材中老師念一次、學生重複念一次的情境。\n"
+            "只處理目前音檔中文字較短（≤2 字詞或 ≤12 字元）的段落。"
+        )
+        self.smart_split_btn.clicked.connect(self.smart_split_words)
+        layout.addWidget(self.smart_split_btn)
+
         layout.addStretch()
 
         self.export_sel_btn = QPushButton("匯出選取")
@@ -1694,6 +1703,119 @@ class MainWindow(QMainWindow):
         self._refresh_table()
         self.waveform.set_segments(self.current_segments)
         self.table.selectRow(new_row)
+
+    # -----------------------------------------------------------------------
+    # Auto-split short utterances at internal silence
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def _find_silence_split_offset(chunk: np.ndarray, sr: int,
+                                   min_gap: float = 0.15,
+                                   threshold_db: float = -35.0):
+        """Return sample offset into `chunk` to split at, or None.
+
+        Scans frame-wise RMS, finds the longest internal silence run that
+        starts after the first voiced frame and ends before the last voiced
+        frame, and returns the middle of that run if it's at least
+        `min_gap` seconds long.
+        """
+        if chunk.size < int(sr * 0.5):
+            return None
+
+        frame_len = max(1, int(sr * 0.02))  # 20 ms
+        n_frames = chunk.size // frame_len
+        if n_frames < 5:
+            return None
+
+        usable = chunk[: n_frames * frame_len].reshape(n_frames, frame_len)
+        rms = np.sqrt((usable.astype(np.float32) ** 2).mean(axis=1) + 1e-12)
+        threshold = 10 ** (threshold_db / 20.0)
+        silent = rms < threshold
+
+        voiced = np.where(~silent)[0]
+        if voiced.size < 2:
+            return None
+        first_v, last_v = int(voiced[0]), int(voiced[-1])
+        if last_v - first_v < 3:
+            return None
+
+        min_gap_frames = max(1, int(min_gap / 0.02))
+        best = None
+        run_start = None
+        for i in range(first_v, last_v + 1):
+            if silent[i]:
+                if run_start is None:
+                    run_start = i
+            else:
+                if run_start is not None:
+                    length = i - run_start
+                    if length >= min_gap_frames and (best is None or length > best[2]):
+                        best = (run_start, i, length)
+                    run_start = None
+        if best is None:
+            return None
+        mid_frame = (best[0] + best[1]) // 2
+        return mid_frame * frame_len
+
+    def smart_split_words(self):
+        if not self.current_file or not self.current_segments:
+            QMessageBox.information(self, "提示", "請先選擇有段落的音檔。")
+            return
+        samples, sr = self.numpy_cache.get(self.current_file, (None, None))
+        if samples is None:
+            return
+
+        self._snapshot()
+        new_segments = []
+        split_count = 0
+        for seg in self.current_segments:
+            text = (seg.text or "").strip()
+            n_words = len(text.split())
+            is_short = n_words <= 2 or len(text) <= 12
+            if not is_short:
+                new_segments.append(seg)
+                continue
+
+            start_f = int(seg.start * sr)
+            end_f = int(seg.end * sr)
+            chunk = samples[start_f:end_f]
+            offset = self._find_silence_split_offset(chunk, sr)
+            if offset is None:
+                new_segments.append(seg)
+                continue
+
+            split_time = round(seg.start + offset / sr, 3)
+            if split_time <= seg.start or split_time >= seg.end:
+                new_segments.append(seg)
+                continue
+
+            new_segments.append(Segment(
+                id=0, start=seg.start, end=split_time,
+                text=text, filename=getattr(seg, "filename", ""),
+            ))
+            new_segments.append(Segment(
+                id=0, start=split_time, end=seg.end,
+                text=text, filename=getattr(seg, "filename", ""),
+            ))
+            split_count += 1
+
+        if split_count == 0:
+            self.statusBar().showMessage("沒有偵測到可拆分的單字段落")
+            # Discard the unused snapshot
+            stack = self._undo_stacks.get(self.current_file)
+            if stack:
+                stack.pop()
+            return
+
+        self.current_segments = new_segments
+        self._reindex()
+        # Indices shifted — clear current file's selection to avoid confusion
+        self.cross_file_selection[self.current_file] = set()
+        self._persist_changes()
+        self._refresh_table()
+        self.waveform.set_segments(self.current_segments)
+        self._update_selection_label()
+        self._update_file_list_indicators()
+        self.statusBar().showMessage(f"自動拆分：分割了 {split_count} 個段落")
 
     def split_at_region(self):
         if self.selected_row < 0 or self.selected_row >= len(self.current_segments):

@@ -306,6 +306,15 @@ class MainWindow(QMainWindow):
         self._play_start_wall: float = 0.0   # monotonic time when play() was called
         self._play_start_pos: float = 0.0    # audio offset at play start (seconds)
         self._play_duration: float = 0.0     # length of queued playback (seconds)
+        # Pause/resume state: when the user hits Space mid-playback we stash
+        # the remaining samples here so the next Space resumes from the
+        # same position rather than restarting.
+        self._play_samples = None
+        self._play_sr: int = 0
+        self._is_paused: bool = False
+        self._paused_remaining = None
+        self._paused_pos: float = 0.0
+        self._paused_duration: float = 0.0
 
         self.position_timer = QTimer()
         self.position_timer.setInterval(80)
@@ -469,7 +478,8 @@ class MainWindow(QMainWindow):
         self.lang_combo = QComboBox()
         self.lang_combo.addItem("自動偵測", None)
         self.lang_combo.addItem("中文", "zh")
-        self.lang_combo.addItem("台語", "nan")
+        # Note: standard Whisper has no Min Nan / Taiwanese code — for
+        # Taiwanese audio use "自動偵測" or "中文".
         self.lang_combo.addItem("英文", "en")
         self.lang_combo.addItem("日文", "ja")
         self.lang_combo.addItem("韓文", "ko")
@@ -652,6 +662,13 @@ class MainWindow(QMainWindow):
 
         self.table.itemSelectionChanged.connect(self._on_table_selection_changed)
         self.table.itemChanged.connect(self._on_table_item_changed)
+        # Belt and suspenders: clicks anywhere in the ▶ column trigger
+        # play_segment, even if the click misses the embedded button.
+        self.table.cellClicked.connect(self._on_table_cell_clicked)
+
+    def _on_table_cell_clicked(self, row: int, column: int):
+        if column == 1 and 0 <= row < len(self.current_segments):
+            self.play_segment(row)
 
     def _build_action_bar(self) -> QWidget:
         bar = QWidget()
@@ -1252,12 +1269,19 @@ class MainWindow(QMainWindow):
             cb_layout.setContentsMargins(0, 0, 0, 0)
             self.table.setCellWidget(i, 0, cb_container)
 
-            # Col 1: play button
+            # Col 1: play button — wrapped in a container that fills the
+            # cell so the button responds to clicks anywhere in the cell
+            # area, not only within its fixed 36 px width.
             play_btn = QPushButton("▶")
             play_btn.setObjectName("play_seg_btn")
-            play_btn.setFixedWidth(36)
+            play_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             play_btn.clicked.connect(lambda _c, idx=i: self.play_segment(idx))
-            self.table.setCellWidget(i, 1, play_btn)
+            play_container = QWidget()
+            pc_layout = QHBoxLayout(play_container)
+            pc_layout.addWidget(play_btn)
+            pc_layout.setContentsMargins(2, 2, 2, 2)
+            pc_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setCellWidget(i, 1, play_container)
 
             # Col 2: index
             idx_item = QTableWidgetItem(str(i + 1))
@@ -1386,9 +1410,46 @@ class MainWindow(QMainWindow):
         """Start sounddevice playback and arm the position timer."""
         sd.stop()
         sd.play(samples, sr)
+        # Remember what's playing so Space can pause and resume the same clip
+        self._play_samples = samples
+        self._play_sr = sr
+        self._is_paused = False
+        self._paused_remaining = None
         self._play_start_wall = time.monotonic()
         self._play_start_pos = audio_start_pos
         self._play_duration = duration
+        self.position_timer.start()
+        self.stop_btn.setEnabled(True)
+
+    def pause_playback(self):
+        """Pause the active playback, keeping enough state to resume from
+        the same point on the next Space press."""
+        if self._is_paused or self._play_samples is None:
+            return
+        elapsed = time.monotonic() - self._play_start_wall
+        if elapsed < 0 or elapsed >= self._play_duration:
+            return
+        consumed = int(elapsed * self._play_sr)
+        self._paused_remaining = self._play_samples[consumed:]
+        self._paused_pos = self._play_start_pos + elapsed
+        self._paused_duration = max(0.0, self._play_duration - elapsed)
+        self._is_paused = True
+        sd.stop()
+        self.position_timer.stop()
+        self.statusBar().showMessage("已暫停（再按空白鍵繼續）", 2000)
+
+    def resume_playback(self):
+        """Resume from the last pause point."""
+        if not self._is_paused or self._paused_remaining is None:
+            return
+        chunk = np.ascontiguousarray(self._paused_remaining)
+        sd.play(chunk, self._play_sr)
+        self._play_samples = chunk
+        self._play_start_wall = time.monotonic()
+        self._play_start_pos = self._paused_pos
+        self._play_duration = self._paused_duration
+        self._is_paused = False
+        self._paused_remaining = None
         self.position_timer.start()
         self.stop_btn.setEnabled(True)
 
@@ -1421,6 +1482,9 @@ class MainWindow(QMainWindow):
         self.position_timer.stop()
         self.waveform.set_playback_position(0)
         self.stop_btn.setEnabled(False)
+        self._is_paused = False
+        self._paused_remaining = None
+        self._play_samples = None
         if self.current_file:
             self.play_all_btn.setEnabled(True)
             self.play_region_btn.setEnabled(True)
@@ -1495,8 +1559,12 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Space:
-            if self.stop_btn.isEnabled():
-                self.stop_playback()
+            # Space: play / pause / resume cycle on the current selection.
+            if self._is_paused:
+                self.resume_playback()
+            elif self.stop_btn.isEnabled():
+                # Currently playing — pause (PM expects pause-not-stop).
+                self.pause_playback()
             elif self.play_region_btn.isEnabled():
                 self.play_region()
             event.accept()
